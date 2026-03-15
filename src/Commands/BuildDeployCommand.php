@@ -10,9 +10,9 @@ use Symfony\Component\Process\Exception\ProcessFailedException;
 class BuildDeployCommand extends Command
 {
     protected $signature = 'build:deploy
+        {message? : Messaggio di commit}
         {--skip-build : Salta npm run build}
-        {--skip-push : Esegui solo build e commit senza push}
-        {--message= : Messaggio di commit personalizzato}';
+        {--skip-push : Esegui solo build e commit senza push}';
 
     protected $description = 'Pulisce build, esegue npm build, commit e push sul branch Git corrente';
 
@@ -130,7 +130,7 @@ class BuildDeployCommand extends Command
         }
 
         // Commit
-        $message = $this->option('message')
+        $message = $this->argument('message')
             ?? 'build: deploy ' . now()->format('Y-m-d H:i');
         $this->runProcess(['git', 'commit', '-m', $message], 'git commit');
 
