@@ -14,7 +14,7 @@ class BuildDeployCommand extends Command
         {--skip-build : Salta npm run build}
         {--skip-push : Esegui solo build e commit senza push}';
 
-    protected $description = 'Pulisce build, esegue npm build, commit e push sul branch Git corrente';
+    protected $description = 'Pulisce build, esegue npm build, verifica configurazione server e push sul branch Git corrente';
 
     public function handle(): int
     {
@@ -28,18 +28,18 @@ class BuildDeployCommand extends Command
         $branch = $this->getCurrentBranch();
         $this->info("Branch corrente: <fg=green>{$branch}</>");
 
-        // 2. Elimina le cartelle build
-        $this->deleteBuildFolders();
+        // 2. Verifica/crea file di configurazione server
+        $this->ensureServerConfig();
 
-        // 3. Esegui npm run build
+        // 3. Elimina la cartella build
+        $this->deleteBuildFolder();
+
+        // 4. Esegui npm run build
         if (!$this->option('skip-build')) {
             $this->runNpmBuild();
         } else {
             $this->warn('Build npm saltato (--skip-build).');
         }
-
-        // 4. Copia la cartella build nella directory principale
-        $this->copyBuildFolder();
 
         // 5. Git add, commit e push
         $this->gitDeploy($branch);
@@ -60,21 +60,80 @@ class BuildDeployCommand extends Command
         return trim($process->getOutput());
     }
 
-    private function deleteBuildFolders(): void
+    /**
+     * Verifica che index.php e .htaccess esistano nella root del progetto.
+     * Se non esistono, li crea con la configurazione corretta per servire
+     * tutto dalla cartella public/ senza dover copiare file fuori.
+     */
+    private function ensureServerConfig(): void
     {
-        $this->comment('Pulizia cartelle build...');
+        $this->comment('Verifica configurazione server...');
 
-        $mainBuildPath = base_path('build');
-        $publicBuildPath = public_path('build');
-
-        if (File::exists($mainBuildPath)) {
-            File::deleteDirectory($mainBuildPath);
-            $this->line('  - build/ eliminata');
+        // index.php nella root
+        $indexPath = base_path('index.php');
+        if (!File::exists($indexPath)) {
+            File::put($indexPath, '<?php' . PHP_EOL . PHP_EOL . 'require __DIR__."/public/index.php";' . PHP_EOL);
+            $this->info('  + index.php creato');
+        } else {
+            $this->line('  - index.php presente');
         }
+
+        // .htaccess nella root
+        $htaccessPath = base_path('.htaccess');
+        if (!File::exists($htaccessPath)) {
+            $htaccessContent = <<<'HTACCESS'
+<IfModule mod_rewrite.c>
+    <IfModule mod_negotiation.c>
+        Options -MultiViews -Indexes
+    </IfModule>
+
+    RewriteEngine On
+
+    # Handle Authorization Header
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # Redirect Trailing Slashes If Not A Folder...
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_URI} (.+)/$
+    RewriteRule ^ %1 [L,R=301]
+
+    # Serve static files from public/ if they exist there
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{DOCUMENT_ROOT}/public/%{REQUEST_URI} -f
+    RewriteRule ^(.*)$ public/$1 [L]
+
+    # Send Requests To Front Controller...
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ public/index.php [L]
+</IfModule>
+HTACCESS;
+
+            File::put($htaccessPath, $htaccessContent);
+            $this->info('  + .htaccess creato');
+        } else {
+            $this->line('  - .htaccess presente');
+        }
+    }
+
+    private function deleteBuildFolder(): void
+    {
+        $this->comment('Pulizia cartella build...');
+
+        $publicBuildPath = public_path('build');
 
         if (File::exists($publicBuildPath)) {
             File::deleteDirectory($publicBuildPath);
             $this->line('  - public/build/ eliminata');
+        }
+
+        // Rimuovi la vecchia cartella build dalla root se esiste (legacy)
+        $legacyBuildPath = base_path('build');
+        if (File::exists($legacyBuildPath)) {
+            File::deleteDirectory($legacyBuildPath);
+            $this->line('  - build/ (legacy) eliminata');
         }
     }
 
@@ -94,22 +153,6 @@ class BuildDeployCommand extends Command
             $this->error($exception->getMessage());
             exit(1);
         }
-    }
-
-    private function copyBuildFolder(): void
-    {
-        $this->comment('Copia build nella directory principale...');
-
-        $sourcePath = public_path('build');
-        $destinationPath = base_path('build');
-
-        if (!File::exists($sourcePath)) {
-            $this->error('La cartella public/build non esiste.');
-            exit(1);
-        }
-
-        File::copyDirectory($sourcePath, $destinationPath);
-        $this->info('  Build copiato.');
     }
 
     private function gitDeploy(string $branch): void
