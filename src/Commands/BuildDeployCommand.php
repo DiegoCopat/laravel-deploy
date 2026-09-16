@@ -14,6 +14,9 @@ class BuildDeployCommand extends Command
         {--skip-build : Salta npm run build}
         {--skip-push : Esegui solo build e commit senza push}';
 
+    /** Riga che distingue un .htaccess protetto da uno scritto prima della 2.3. */
+    private const MARCATORE_PROTEZIONE = '# laravel-deploy: protezione file sensibili';
+
     protected $description = 'Pulisce build, esegue npm build, verifica configurazione server e push sul branch Git corrente';
 
     public function handle(): int
@@ -80,14 +83,63 @@ class BuildDeployCommand extends Command
 
         // .htaccess nella root
         $htaccessPath = base_path('.htaccess');
+
         if (!File::exists($htaccessPath)) {
-            $htaccessContent = <<<'HTACCESS'
+            File::put($htaccessPath, $this->protezioneFileSensibili() . PHP_EOL . PHP_EOL . $this->regoleRiscrittura());
+            $this->info('  + .htaccess creato');
+        } elseif (!str_contains(File::get($htaccessPath), self::MARCATORE_PROTEZIONE)) {
+            /*
+             * .htaccess scritto da una versione precedente, che lasciava
+             * .env leggibile dal web. Le sue regole restano dove sono: gli
+             * viene solo anteposta la protezione che mancava.
+             */
+            File::put($htaccessPath, $this->protezioneFileSensibili() . PHP_EOL . PHP_EOL . File::get($htaccessPath));
+            $this->warn('  ! .htaccess aggiornato: mancava la protezione di .env');
+        } else {
+            $this->line('  - .htaccess presente');
+        }
+    }
+
+    /**
+     * Nega il web ai file che non devono mai essere serviti.
+     *
+     * Le regole di riscrittura valgono solo quando il file richiesto non
+     * esiste (RewriteCond !-f). Nella cartella principale pero' .env,
+     * composer.json e artisan esistono davvero: senza questo blocco Apache
+     * li consegna cosi' come sono, con dentro APP_KEY e le password del
+     * database. Non dipende da mod_rewrite, quindi protegge anche dove quel
+     * modulo fosse spento.
+     */
+    private function protezioneFileSensibili(): string
+    {
+        return <<<'HTACCESS'
+# laravel-deploy: protezione file sensibili
+<FilesMatch "^(\.env.*|\.git.*|composer\.(json|lock)|package(-lock)?\.json|artisan|phpunit\.xml|.*\.md)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+HTACCESS;
+    }
+
+    /** Le regole che servono il sito da public/ restando nella root. */
+    private function regoleRiscrittura(): string
+    {
+        return <<<'HTACCESS'
 <IfModule mod_rewrite.c>
     <IfModule mod_negotiation.c>
         Options -MultiViews -Indexes
     </IfModule>
 
     RewriteEngine On
+
+    # La cartella .git non e' un contenuto del sito: dentro c'e' l'intera
+    # storia del progetto, compresi i file che nel frattempo sono stati tolti.
+    RewriteRule ^\.git(/|$) - [F,L]
 
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
@@ -110,12 +162,6 @@ class BuildDeployCommand extends Command
     RewriteRule ^ public/index.php [L]
 </IfModule>
 HTACCESS;
-
-            File::put($htaccessPath, $htaccessContent);
-            $this->info('  + .htaccess creato');
-        } else {
-            $this->line('  - .htaccess presente');
-        }
     }
 
     private function deleteBuildFolder(): void
