@@ -101,7 +101,8 @@ class BuildDeployCommand extends Command
     }
 
     /**
-     * Nega il web ai file che non devono mai essere serviti.
+     * Nega il web a cio' che non deve mai essere servito: i file per nome
+     * e le cartelle per percorso.
      *
      * Le regole di riscrittura valgono solo quando il file richiesto non
      * esiste (RewriteCond !-f). Nella cartella principale pero' .env,
@@ -114,6 +115,13 @@ class BuildDeployCommand extends Command
     {
         return <<<'HTACCESS'
 # laravel-deploy: protezione file sensibili
+#
+# Le regole di riscrittura piu' sotto si applicano solo quando il file
+# richiesto non esiste (RewriteCond !-f). Nella cartella principale pero'
+# .env, i log e la cartella .git esistono davvero: senza questo blocco
+# Apache li consegna cosi' come sono.
+
+# Per nome: vale anche dove mod_rewrite fosse spento.
 <FilesMatch "^(\.env.*|\.git.*|composer\.(json|lock)|package(-lock)?\.json|artisan|phpunit\.xml|.*\.md)$">
     <IfModule mod_authz_core.c>
         Require all denied
@@ -123,6 +131,15 @@ class BuildDeployCommand extends Command
         Deny from all
     </IfModule>
 </FilesMatch>
+
+# Per cartella: FilesMatch guarda solo il nome finale, quindi /.git/config
+# e /storage/logs/laravel.log gli sfuggirebbero.
+# storage/app/public resta raggiungibile dal collegamento public/storage,
+# che e' la strada da cui passano le immagini e i video caricati.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(\.git|\.github|storage/(logs|framework|app)|vendor|config|bootstrap|database|tests|routes|resources)(/|$) - [F,L]
+</IfModule>
 HTACCESS;
     }
 
@@ -136,10 +153,6 @@ HTACCESS;
     </IfModule>
 
     RewriteEngine On
-
-    # La cartella .git non e' un contenuto del sito: dentro c'e' l'intera
-    # storia del progetto, compresi i file che nel frattempo sono stati tolti.
-    RewriteRule ^\.git(/|$) - [F,L]
 
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
